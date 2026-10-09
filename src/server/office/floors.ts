@@ -117,7 +117,8 @@ export async function openFloors(ctx: Ctx, hookPort: number): Promise<FloorsOpen
     },
     lent: (floor) => [...floors.values()].some((f) => f !== floor && worksIn(f, floor)),
     locksUp: () => !!ctx.maps.plan().sendHome?.keeps,
-    runAs: ctx.signins,
+    // On the office's Claude account (see claude-accounts.ts), or whoever hired them's own sign-ins on top.
+    runAs: { claudeReady: (o) => ctx.signins.claudeReady(o), why: (w) => ctx.signins.why(w), apply: (o, env, dirs) => (o ? ctx.signins.apply(o, ctx.claudeAccounts.apply(env, dirs), dirs) : ctx.claudeAccounts.apply(env, dirs)) },
     ghAs: (owner) => (owner ? ctx.signins.ghAs(owner) : undefined),
   };
   /** Whether a worker on `from` works in `on`'s project too (see WorkerInfo.repos). */

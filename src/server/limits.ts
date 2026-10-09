@@ -27,6 +27,8 @@ export class PlanLimitsReader {
   private lastRead = 0;
   private fails = 0;
   private closed = false;
+  /** Goes up with each setEnv, so a read under the old sign-in is thrown away. */
+  private gen = 0;
 
   /**
    * @param claude the `claude` binary, or null when it isn't installed (nothing is ever shown)
@@ -52,6 +54,17 @@ export class PlanLimitsReader {
     this.schedule(0);
   }
 
+  /** Reads as another sign-in from now on (the office's Claude account was switched). */
+  setEnv(env: Record<string, string>) {
+    this.env = env;
+    this.gen++;
+    this.limits = { windows: [], at: 0 };
+    this.modelWeeks = [];
+    this.fails = 0;
+    this.onChange(this.limits);
+    if (!this.running) this.schedule(0);
+  }
+
   close() {
     this.closed = true;
     clearTimeout(this.timer);
@@ -67,10 +80,12 @@ export class PlanLimitsReader {
   private async read() {
     if (!this.wanted()) return this.schedule(POLL_MS);
     this.running = true;
+    const gen = this.gen;
     const answer = await ask(this.claude!, this.env);
     this.running = false;
     this.lastRead = Date.now();
     if (this.closed) return;
+    if (gen !== this.gen) return this.schedule(0);
     let next = POLL_MS;
     if (answer === null) {
       if (++this.fails >= FAILS_BEFORE_BACKOFF) {

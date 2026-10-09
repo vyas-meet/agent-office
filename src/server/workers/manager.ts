@@ -687,13 +687,11 @@ export class WorkerManager {
     // A workspace isn't a repository, but it's inside this floor's checkout: git run in it must not
     // find that checkout (and switch its branch, say) instead of saying it's no repository.
     if (info.repos?.length) env.GIT_CEILING_DIRECTORIES = [path.dirname(cwd), env.GIT_CEILING_DIRECTORIES].filter(Boolean).join(path.delimiter);
-    if (w.owner && this.runAs) {
-      if (adapter?.signIn && !this.runAs.claudeReady(w.owner)) {
-        this.startFailed(w, `whoever hired ${info.name} (${info.createdBy}) isn't signed in to Claude — they can sign in under ☰ → 🔐 Your sign-ins, then press R here`);
-        return;
-      }
-      this.runAs.apply(w.owner, env, [this.dir, cwd]);
+    if (w.owner && this.runAs && adapter?.signIn && !this.runAs.claudeReady(w.owner)) {
+      this.startFailed(w, `whoever hired ${info.name} (${info.createdBy}) isn't signed in to Claude — they can sign in under ☰ → 🔐 Your sign-ins, then press R here`);
+      return;
     }
+    this.runAs?.apply(w.owner, env, [this.dir, cwd]);
     adapter?.usage?.locate?.(this.handleOf(w), cwd, env);
 
     if (adapter?.transport === 'acp') {

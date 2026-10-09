@@ -13,6 +13,7 @@ import { saveSettings, store } from '../../state';
 import { openAccounts } from '../../ui/accounts';
 import { openBoard } from '../../ui/boards';
 import { openCharacter } from '../../ui/character';
+import { openClaudeAccounts } from '../../ui/claude-accounts';
 import { $ } from '../../ui/dom';
 import { toggleFloorMenu } from '../../ui/floormenu';
 import { openHelp } from '../../ui/hud';
@@ -91,6 +92,7 @@ export function installHud(ctx: Ctx, core: CoreState, parts: HudParts) {
       { id: 'team', icon: '👥', label: 'Invite teammates', section: 'Together', shown: () => store.invites, run: () => openTeam(net) },
       { id: 'accounts', icon: '🔑', label: 'Accounts', section: 'Together', shown: () => store.me.admin, title: () => 'Invite people, see who has an account, revoke them', run: () => openAccounts(net) },
       { id: 'signins', icon: '🔐', label: 'Your sign-ins', section: 'Together', shown: () => !!store.me.account, tone: () => (needsSigningIn() ? 'danger' : undefined), status: needsSigningIn, chip: () => 'Sign in to Claude', title: () => 'The Claude plan and GitHub account your workers run on: your own', run: () => openSignIns(net) },
+      { id: 'claude', icon: '✳️', label: 'Claude account', section: 'Office', shown: () => store.me.admin, title: () => 'Switch the Claude account workers run on, or add one', run: () => openClaudeAccounts(net) },
       { id: 'settings', icon: '⚙️', label: 'Settings', section: 'Office', run: showSettings },
       { id: 'help', icon: '❓', label: 'Controls', section: 'Office', key: 'H', run: openHelp },
       { id: 'lite', icon: '📱', label: '2D view', section: 'Office', title: () => 'The workers, their terminals and the boards without the 3D: for a phone or a slow computer', run: () => location.assign('/lite') },

@@ -79,6 +79,8 @@ Press Enter to skip a step: the elevator in the office asks for your first proje
 
 Walk to an empty desk, press **E** and hire a worker.
 
+**More than one Claude account?** Open **☰ → ✳️ Claude account** to pick the one workers run on. Click **＋ Add a Claude account**, open Claude's sign-in page, sign in, and paste back the code it shows. The new account is then in use. Or paste a token from `claude setup-token`. Workers you start from then on run on the account you picked, and the ones already running keep theirs until you restart them (**R** at their desk). Each added account keeps its own login in `.agent-office/claude-accounts/` and shares your Claude settings, `CLAUDE.md`, agents, commands, skills, plugins, MCP servers and conversations, so only the account changes and a restarted worker still resumes its own conversation. More in [docs/features.md](docs/features.md).
+
 Common options:
 
 ```bash
@@ -354,7 +356,7 @@ deploy/dokploy.sh ssh 'node /opt/agent-office/bin/agent-office.js accounts invit
 deploy/coolify.sh ssh 'node /opt/agent-office/bin/agent-office.js accounts invite ada'   # on Coolify
 ```
 
-**Their own Claude and GitHub.** With accounts, everyone's workers run on their own Claude plan, and the office acts on GitHub as them: comments, merges, labels, pushes and pull requests show up under their name. The first time someone comes in, **🔐 Your sign-ins** opens (it's in the **☰** menu too). *Sign in with Claude* gives them Claude's sign-in page and takes back the code it shows. *Sign in with GitHub* shows a one-time code for github.com/login/device. They can paste a token from `claude setup-token`, or a GitHub token, instead. A 🐚 shell they open at a desk runs as them, so `claude auth login` and `gh auth login` typed there work too. Admins can use the office machine's own sign-ins instead. Each account's sign-ins live in `.agent-office/homes/<account>/`, and revoking the account deletes them. The boards are read with the machine's own `gh`, so that account needs read access to the repos. Running it just for yourself, with no accounts, none of this applies.
+**Their own Claude and GitHub.** With accounts, everyone's workers run on their own Claude plan, and the office acts on GitHub as them: comments, merges, labels, pushes and pull requests show up under their name. The first time someone comes in, **🔐 Your sign-ins** opens (it's in the **☰** menu too). *Sign in with Claude* gives them Claude's sign-in page and takes back the code it shows. *Sign in with GitHub* shows a one-time code for github.com/login/device. They can paste a token from `claude setup-token`, or a GitHub token, instead. A 🐚 shell they open at a desk runs as them, so `claude auth login` and `gh auth login` typed there work too. Admins can use the office machine's own sign-ins instead, which follow **✳️ Claude account**. Each account's sign-ins live in `.agent-office/homes/<account>/`, and revoking the account deletes them. The boards are read with the machine's own `gh`, so that account needs read access to the repos. Running it just for yourself, with no accounts, none of this applies.
 
 **3. Turn off the shared password.** Until you do, anyone who knows the office password can get in, as an admin. Once everyone has an account, switch it off in **🔑 Accounts** (signed in with your own admin account), or `agent-office accounts password off`.
 

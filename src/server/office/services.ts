@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { childEnv, resolveCommand } from '../workers.js';
 import { SignIns } from '../signins.js';
+import { ClaudeAccounts } from '../claude-accounts.js';
 import { agentProviders, configuredProvider } from '../agents.js';
 import { Tailnet } from '../tailnet.js';
 import { Team } from '../team.js';
@@ -48,13 +49,26 @@ export function createServices(ctx: Ctx): BuildingServices {
   );
 
   const claudeBin = configuredProvider(cfg.agentCmd) === 'claude' ? resolveCommand(cfg.agentCmd) : resolveCommand('claude');
+  // The Claude account the office's own workers run on: this computer's own, or one added from ☰ →
+  // ✳️ Claude account. Admins on the office's own sign-in (below) run on it too.
+  const claudeAccounts = new ClaudeAccounts(
+    cfg.dataDir,
+    claudeBin,
+    childEnv,
+    () => {
+      for (const c of clients.values()) if (!c.out && ctx.meOf(c.accountId).admin) ctx.sendTo(c, { t: 'claudeAccounts', state: claudeAccounts.state() });
+    },
+    () => limits.setEnv(officeEnv()),
+  );
+  /** The office's own environment, on the Claude account its workers run on. */
+  const officeEnv = () => claudeAccounts.apply(childEnv());
   // Everyone with an account runs on their own Claude and GitHub sign-ins (see signins.ts). On the
   // shared password, with no accounts, the office's own are used, as they always were.
   const signins = new SignIns(
     cfg.dataDir,
     claudeBin,
     resolveCommand('gh'),
-    childEnv,
+    officeEnv,
     (id) => accounts.get(id)?.role === 'admin',
     (id) => {
       for (const c of clients.values()) if (c.accountId === id && !c.out) ctx.sendTo(c, { t: 'signins', state: signins.state(id) });
@@ -67,7 +81,7 @@ export function createServices(ctx: Ctx): BuildingServices {
   // plan, and each account's own once it runs on a Claude sign-in of its own.
   const limits = new PlanLimitsReader(
     claudeBin,
-    childEnv(),
+    officeEnv(),
     () => [...clients.values()].some((c) => limitsOf(c) === limits),
     (state) => {
       for (const c of clients.values()) if (limitsOf(c) === limits) ctx.sendTo(c, { t: 'limits', state });
@@ -84,7 +98,7 @@ export function createServices(ctx: Ctx): BuildingServices {
       a?.reader.close();
       const reader = new PlanLimitsReader(
         claudeBin,
-        signins.apply(id, childEnv(), [], 'claude'),
+        signins.apply(id, officeEnv(), [], 'claude'),
         () => [...clients.values()].some((o) => o.accountId === id),
         (state) => {
           for (const o of clients.values()) if (o.accountId === id) ctx.sendTo(o, { t: 'limits', state });
@@ -125,7 +139,7 @@ export function createServices(ctx: Ctx): BuildingServices {
     });
   };
 
-  return { sky, themes, maps, prompts, leaveOnMerge, ledger, signins, limits, accountLimits, webhook, machine, limitsOf, pumpQueues };
+  return { sky, themes, maps, prompts, leaveOnMerge, ledger, signins, claudeAccounts, limits, accountLimits, webhook, machine, limitsOf, pumpQueues };
 }
 
 /** What's made once the floors are open: the SSH team, the tailnet, workers' web servers, pictures and upgrades. */

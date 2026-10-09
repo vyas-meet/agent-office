@@ -1,9 +1,9 @@
-import { execFile, spawn } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import * as pty from '@lydell/node-pty';
 import type { SignInKind, SignInState, SignInsState } from '../shared/protocol.js';
+import { CLAUDE_VARS, carryTrust, claudeJson, claudeLogin, claudeStatus, lastWords, run, seedClaudeConfig, type LoginFlow } from './claude-cli.js';
 
 /*
  * Everyone's own Claude and GitHub
@@ -25,14 +25,12 @@ import type { SignInKind, SignInState, SignInsState } from '../shared/protocol.j
  * on the machine's own `claude` and `gh`, exactly as before.
  */
 
-/** Credentials the office's own environment may carry. None of them reach anything run as someone else. */
-const CLAUDE_VARS = ['CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDE_CODE_OAUTH_REFRESH_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR', 'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'CLAUDE_CONFIG_DIR', 'CLAUDE_SECURESTORAGE_CONFIG_DIR'];
+/** Credentials the office's own environment may carry (and CLAUDE_VARS). None of them reach anything run as someone else. */
 const GITHUB_VARS = ['GH_TOKEN', 'GITHUB_TOKEN', 'GH_ENTERPRISE_TOKEN', 'GITHUB_ENTERPRISE_TOKEN', 'GH_CONFIG_DIR', 'GIT_CONFIG_GLOBAL'];
-/** GitHub's one-time codes last 15 minutes; a Claude sign-in link gets as long. */
+/** GitHub's one-time codes last 15 minutes. */
 const FLOW_MS = 15 * 60_000;
 /** Someone's sign-ins are looked at again at most this often, unless they ask. */
 const LOOK_GAP_MS = 20_000;
-const LOOK_TIMEOUT_MS = 30_000;
 /** From `claude setup-token` (sk-ant-oat01-…), or an Anthropic API key (sk-ant-api03-…). */
 const CLAUDE_TOKEN = /^sk-ant-[a-z]+\d*-[A-Za-z0-9_-]{20,}$/;
 const API_KEY = /^sk-ant-api/;
@@ -50,11 +48,7 @@ interface Saved {
 }
 
 /** A sign-in the office is running for someone. */
-interface Flow {
-  stop(): void;
-  /** Types into it: the code from Claude's sign-in page. */
-  write?(data: string): void;
-}
+type Flow = Pick<LoginFlow, 'stop'> & Partial<LoginFlow>;
 
 interface Live {
   claude: Omit<SignInState, 'how'>;
@@ -144,7 +138,7 @@ export class SignIns {
       for (const k of CLAUDE_VARS) delete env[k];
       env.CLAUDE_CONFIG_DIR = path.join(home, 'claude');
       if (s.claude?.use === 'token') env[API_KEY.test(s.claude.token) ? 'ANTHROPIC_API_KEY' : 'CLAUDE_CODE_OAUTH_TOKEN'] = s.claude.token;
-      if (dirs.length) this.trust(env.CLAUDE_CONFIG_DIR, dirs);
+      if (dirs.length) carryTrust(claudeJson(this.base()), env.CLAUDE_CONFIG_DIR, dirs);
     }
     if (only !== 'claude' && this.how(id, s, 'github') !== 'office') {
       for (const k of GITHUB_VARS) delete env[k];
@@ -209,7 +203,7 @@ export class SignIns {
       this.save(id, s);
       // Claude asks once before it uses an API key from the environment; this one is theirs, so it's approved.
       if (API_KEY.test(token)) {
-        this.seed(path.join(this.prepare(id), 'claude'), (c) => {
+        seedClaudeConfig(path.join(this.prepare(id), 'claude'), (c) => {
           c.customApiKeyResponses ??= { approved: [], rejected: [] };
           const tail = token.slice(-20);
           if (!c.customApiKeyResponses.approved.includes(tail)) c.customApiKeyResponses.approved.push(tail);
@@ -321,7 +315,7 @@ export class SignIns {
     const home = this.home(id);
     if (!existsSync(path.join(home, 'gitconfig'))) {
       for (const d of [this.homes, home, path.join(home, 'claude'), path.join(home, 'gh')]) mkdirSync(d, { recursive: true, mode: 0o700 });
-      this.seed(path.join(home, 'claude'));
+      seedClaudeConfig(path.join(home, 'claude'));
       this.writeGitConfig(id);
     }
     return home;
@@ -375,64 +369,30 @@ export class SignIns {
     if (!this.claude) return "Claude Code isn't installed where the office can run it — paste a token from `claude setup-token` instead";
     this.stop(id, 'claude');
     const l = this.get(id);
-    // BROWSER=true: Claude "opens" the page with the `true` command and just prints it, for the browser to show.
-    const env = { ...this.claudeEnv(id), BROWSER: 'true', TERM: 'xterm-256color' };
-    let p: pty.IPty;
-    try {
-      // Wide, so the link comes out on one line.
-      p = pty.spawn(this.claude, ['auth', 'login', '--claudeai'], { name: 'xterm-256color', cols: 4000, rows: 40, cwd: this.home(id), env });
-    } catch (err) {
-      return `Couldn't start Claude Code's sign-in: ${(err as Error).message}`;
-    }
-    let out = '';
-    /** Where the output after the code was sent starts, to tell a wrong code apart from the first ask. */
-    let sentAt = -1;
-    const flow: Flow = {
-      stop: () => {
-        try {
-          p.kill();
-        } catch {
-          // already gone
-        }
-      },
-      write: (data) => {
-        sentAt = out.length;
-        p.write(data);
-      },
-    };
-    const timer = setTimeout(flow.stop, FLOW_MS);
-    p.onData((d) => {
-      out = (out + d).slice(-50_000);
-      if (l.flows.claude !== flow) return;
-      const text = plain(out);
-      if (!l.claude.pending?.url) {
-        const url = /https:\/\/\S*oauth\/authorize\?\S+/.exec(text)?.[0];
-        if (url) {
-          l.claude = { status: 'busy', pending: { url } };
-          this.onChange(id);
-        }
-      } else if (sentAt >= 0 && /error|invalid|expired|failed/i.test(plain(out.slice(sentAt)))) {
-        // Still running after complaining: the code didn't take, and it waits for another.
-        const said = lastWords(out.slice(sentAt));
-        sentAt = -1;
-        l.claude = { status: 'busy', pending: { url: l.claude.pending.url }, error: said || "That code didn't work — copy it again, or start over" };
+    const flow = claudeLogin(this.claude, this.claudeEnv(id), this.home(id), {
+      url: (url) => {
+        l.claude = { status: 'busy', pending: { url } };
         this.onChange(id);
-      }
+      },
+      badCode: (said) => {
+        l.claude = { status: 'busy', pending: { url: l.claude.pending?.url }, error: said };
+        this.onChange(id);
+      },
+      exit: (ok, said) => {
+        if (l.flows.claude !== flow) return;
+        delete l.flows.claude;
+        if (ok) {
+          // Signed in with its own login: that's what its workers use from now on.
+          const s = this.load(id);
+          delete s.claude;
+          this.save(id, s);
+          l.claude = { status: 'busy' };
+        } else l.claude = { status: 'none', error: said };
+        this.onChange(id);
+        void this.look(id, true);
+      },
     });
-    p.onExit(({ exitCode }) => {
-      clearTimeout(timer);
-      if (l.flows.claude !== flow) return;
-      delete l.flows.claude;
-      if (exitCode === 0) {
-        // Signed in with its own login: that's what its workers use from now on.
-        const s = this.load(id);
-        delete s.claude;
-        this.save(id, s);
-        l.claude = { status: 'busy' };
-      } else l.claude = { status: 'none', error: lastWords(out) || 'Signing in stopped before it finished' };
-      this.onChange(id);
-      void this.look(id, true);
-    });
+    if (typeof flow === 'string') return flow;
     l.flows.claude = flow;
     l.claude = { status: 'busy', pending: {} };
     this.onChange(id);
@@ -496,20 +456,14 @@ export class SignIns {
       return;
     }
     const env = how === 'office' ? this.base() : this.apply(id, this.base(), [], 'claude');
-    const r = await run(this.claude, ['auth', 'status', '--json'], env);
-    let status: { loggedIn?: boolean; email?: string; subscriptionType?: string; authMethod?: string } = {};
-    try {
-      status = JSON.parse(r.out);
-    } catch {
-      // older Claude Code, or it failed: nothing to go on
-    }
+    const status = await claudeStatus(this.claude, env);
     if (l.flows.claude) return;
-    const plan = status.subscriptionType ? ` · ${status.subscriptionType[0].toUpperCase()}${status.subscriptionType.slice(1)}` : '';
+    const plan = status.plan ? ` · ${status.plan}` : '';
     const pasted = s.claude?.use === 'token' ? (API_KEY.test(s.claude.token) ? 'an API key' : 'a token from claude setup-token') : 'a token';
     // A token in the environment is taken on trust: whether it works shows when a worker starts.
     const who = status.loggedIn || how === 'token' ? `${status.email ?? pasted}${plan}` : undefined;
     // Signed out, `claude auth status` still answers (and exits 1); anything else went wrong.
-    l.claude = who ? { status: 'ok', who } : { status: 'none', error: r.out ? undefined : r.last || undefined };
+    l.claude = who ? { status: 'ok', who } : { status: 'none', error: status.error };
     this.remember(id, 'claude', how === 'office' ? undefined : who);
   }
 
@@ -558,43 +512,6 @@ export class SignIns {
     }
   }
 
-  /** Claude's own settings in an account's folder: its first-run questions already answered. */
-  private seed(dir: string, change?: (c: any) => void) {
-    const file = path.join(dir, '.claude.json');
-    let c: any = {};
-    try {
-      c = JSON.parse(readFileSync(file, 'utf8'));
-    } catch {
-      // new
-    }
-    const before = JSON.stringify(c);
-    c.hasCompletedOnboarding = true;
-    change?.(c);
-    if (JSON.stringify(c) === before) return;
-    try {
-      writeFileSync(file, JSON.stringify(c, null, 2), { mode: 0o600 });
-    } catch (err) {
-      console.error(`agent-office: couldn't write ${file}: ${(err as Error).message}`);
-    }
-  }
-
-  /** Folders the office's own Claude trusts, the account's Claude trusts too: they're the same projects. */
-  private trust(configDir: string, dirs: string[]) {
-    let office: any;
-    try {
-      const base = this.base();
-      office = JSON.parse(readFileSync(base.CLAUDE_CONFIG_DIR ? path.join(base.CLAUDE_CONFIG_DIR, '.claude.json') : path.join(os.homedir(), '.claude.json'), 'utf8'));
-    } catch {
-      return;
-    }
-    const trusted = (d: string) => office?.projects?.[d]?.hasTrustDialogAccepted === true;
-    if (!dirs.some(trusted)) return;
-    this.seed(configDir, (c) => {
-      c.projects ??= {};
-      for (const d of dirs) c.projects[d] = { ...c.projects[d], hasTrustDialogAccepted: true };
-    });
-  }
-
   /**
    * The account's git config: the office's own (included), with gh as the credentials for GitHub,
    * so pushes go out as them, and their GitHub name and private email on commits once it's known.
@@ -625,36 +542,4 @@ export class SignIns {
 /** A value for a git config file, quoted. */
 function quote(v: string): string {
   return `"${v.replace(/[\p{C}]/gu, '').replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
-}
-
-/** Terminal output as plain text: no colors, links or cursor moves. */
-function plain(s: string): string {
-  return s
-    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
-    .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '')
-    .replace(/\x1b[@-_]/g, '')
-    .replace(/\r\n?/g, '\n');
-}
-
-/** The last thing a command said, minus the link and the prompt, for an error line. */
-function lastWords(s: string): string {
-  const lines = plain(s)
-    .split('\n')
-    .map((l) => l.trim())
-    .filter((l) => l && !/https?:\/\/|paste code|opening browser|press enter/i.test(l));
-  return (lines.at(-1) ?? '').slice(0, 300);
-}
-
-/** Runs a command to the end; never rejects. `last` is the last line it said on stderr (or stdout). */
-function run(cmd: string, args: string[], env: Record<string, string>, input?: string): Promise<{ code: number; out: string; last: string }> {
-  return new Promise((resolve) => {
-    const p = execFile(cmd, args, { env, timeout: LOOK_TIMEOUT_MS, maxBuffer: 1024 * 1024, encoding: 'utf8' }, (err, stdout, stderr) => {
-      const e = err as { code?: number | string } | null;
-      const code = !e ? 0 : typeof e.code === 'number' ? e.code : -1;
-      const last = lastWords(stderr || (err && !stdout ? err.message : ''));
-      resolve({ code, out: stdout.trim(), last });
-    });
-    if (input !== undefined) p.stdin?.end(input);
-    else p.stdin?.end();
-  });
 }
